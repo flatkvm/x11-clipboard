@@ -6,7 +6,7 @@ mod run;
 use std::thread;
 use std::time::{ Duration, Instant };
 use std::sync::{ Arc, RwLock };
-use std::sync::mpsc::{ Sender, channel };
+use std::sync::mpsc::{ Receiver, Sender, channel };
 use std::collections::HashMap;
 use xcb::{ Connection, Window, Atom };
 use xcb::base::ConnError;
@@ -32,7 +32,8 @@ pub struct Clipboard {
     pub getter: Context,
     pub setter: Arc<Context>,
     setmap: SetMap,
-    send: Sender<Atom>
+    send: Sender<Atom>,
+    rq_recv: Receiver<u32>
 }
 
 pub struct Context {
@@ -109,10 +110,11 @@ impl Clipboard {
         let setmap2 = Arc::clone(&setmap);
 
         let (sender, receiver) = channel();
+        let (rq_sender, rq_receiver) = channel();
         let max_length = setter.connection.get_maximum_request_length() as usize * 4;
-        thread::spawn(move || run::run(&setter2, &setmap2, max_length, &receiver));
+        thread::spawn(move || run::run(&setter2, &setmap2, max_length, &receiver, &rq_sender));
 
-        Ok(Clipboard { getter, setter, setmap, send: sender })
+        Ok(Clipboard { getter, setter, setmap, send: sender, rq_recv: rq_receiver })
     }
 
     fn process_event<T>(&self, buff: &mut Vec<u8>, selection: Atom, target: Atom, property: Atom, timeout: T, use_xfixes: bool, xfixes_event_base: u8)
@@ -283,8 +285,7 @@ impl Clipboard {
         Ok(buff)
     }
 
-    /// store value.
-    pub fn store<T: Into<Vec<u8>>>(&self, selection: Atom, target: Atom, value: T)
+    fn store_common<T: Into<Vec<u8>>>(&self, selection: Atom, target: Atom, value: T)
         -> Result<(), Error>
     {
         self.send.send(selection)?;
@@ -300,12 +301,38 @@ impl Clipboard {
         );
 
         self.setter.connection.flush();
+        Ok(())
+    }
+
+    /// store value.
+    pub fn store<T: Into<Vec<u8>>>(&self, selection: Atom, target: Atom, value: T)
+        -> Result<(), Error>
+    {
+        self.store_common(selection, target, value)?;
 
         if xcb::get_selection_owner(&self.setter.connection, selection)
             .get_reply()
             .map(|reply| reply.owner() == self.setter.window)
             .unwrap_or(false)
         {
+            Ok(())
+        } else {
+            Err(Error::Owner)
+        }
+    }
+
+    /// store value and wait for someone to request it.
+    pub fn store_wait<T: Into<Vec<u8>>>(&self, selection: Atom, target: Atom, value: T)
+        -> Result<(), Error>
+    {
+        self.store_common(selection, target, value)?;
+
+        if xcb::get_selection_owner(&self.setter.connection, selection)
+            .get_reply()
+            .map(|reply| reply.owner() == self.setter.window)
+            .unwrap_or(false)
+        {
+            self.rq_recv.recv().unwrap();
             Ok(())
         } else {
             Err(Error::Owner)

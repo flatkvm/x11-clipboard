@@ -1,6 +1,6 @@
 use std::cmp;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{ Receiver, Sender };
 use std::collections::HashMap;
 use xcb::{ self, Atom };
 use ::{ INCR_CHUNK_SIZE, Context, SetMap };
@@ -21,7 +21,7 @@ struct IncrState {
     pos: usize
 }
 
-pub fn run(context: &Arc<Context>, setmap: &SetMap, max_length: usize, receiver: &Receiver<Atom>) {
+pub fn run(context: &Arc<Context>, setmap: &SetMap, max_length: usize, receiver: &Receiver<Atom>, rq_sender: &Sender<u32>) {
     let mut incr_map = HashMap::new();
     let mut state_map = HashMap::new();
 
@@ -84,6 +84,7 @@ pub fn run(context: &Arc<Context>, setmap: &SetMap, max_length: usize, receiver:
                     )
                 );
                 context.connection.flush();
+                rq_sender.send(0).unwrap();
             },
             xcb::PROPERTY_NOTIFY => {
                 let event = unsafe { xcb::cast_event::<xcb::PropertyNotifyEvent>(&event) };
